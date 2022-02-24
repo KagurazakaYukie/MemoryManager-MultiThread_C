@@ -9,4 +9,4 @@
 暂不开源
 
 2022/2/24
-已开源
+已开源 要和这个搭配用https://github.com/KagurazakaYukie/ThreadManager_C，才能做到多线程分配内存

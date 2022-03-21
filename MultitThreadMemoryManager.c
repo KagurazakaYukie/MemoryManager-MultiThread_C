@@ -1,4 +1,3 @@
-#include <stdlib.h>
 #include <stdio.h>
 #include <unistd.h>
 #include <string.h>
@@ -6,137 +5,121 @@
 #include <pthread.h>
 #include "MultitThreadMemoryManager.h"
 
-MTMemoryManager *MTMemoryManagerInit(ThreadUnit Length, UnitSize us) {
-    MemoryBigUnitList *mbul = sbrk(0);
-    brk(mbul + sizeof(MemoryBigUnitList));
-    mbul->bnext = NULL;
-    mbul->mbu = sbrk(0);
-    brk(mbul->mbu + ((sizeof(MemoryBigUnit) * Length) + sizeof(MemoryBigUnit) * 3));
-    mbul->length = Length + 3;
-    mbul->zero = Length;
-
+MTMemoryManager *MTMemoryManagerInit(UnitSize us) {
     MTMemoryManager *mm = sbrk(0);
     brk(mm + sizeof(MTMemoryManager));
-    mm->mbu = NULL;
-    mm->msusize = us;
-    mm->listsize = Length;
-    mm->mbu = mbul;
-    mm->mbuw = mbul;
-
-    MemoryBigUnit *mbu;
-    mbu = sbrk(0);
-    brk(mbu + MemoryBigUnitSize);
-    mbu->snext = NULL;
-    mbu->msuw = NULL;
-    mbu->id = pthread_self();
-    mbu->unit = 0;
-
-    NewSmallUnit(mbu, us);
-
-    mbul->mbu[0] = mbu;
-
-    for (size_t i = 1; i < Length; i++) {
-        mbu = sbrk(0);
-        brk(mbu + MemoryBigUnitSize);
-        mbu->snext = NULL;
-        mbu->msuw = NULL;
-        mbu->id = 0;
-        mbu->unit = 0;
-        mbul->mbu[i] = mbu;
-    }
+    mm->mbulist = sbrk(0);
+    brk(mm->mbulist + (sizeof(MemoryBigUnit *) << 2));
+    mm->mbuliststandard = 2;
+    mm->smallunitsize = us;
+    mm->mbulistsize = 4;
+    mm->mbulistlength = 0;
     return mm;
 }
 
 MemoryBigUnit *NewBigUnit(MTMemoryManager *mm) {
-    MemoryBigUnitList *mbul = mm->mbuw;
-    if (mbul->length != mbul->zero) {
-        MemoryBigUnit *mbu;
-        mbu = sbrk(0);
-        brk(mbu + MemoryBigUnitSize);
-        mbu->snext = NULL;
-        mbu->msuw = NULL;
-        mbu->id = 0;
-        mbu->unit = 0;
-        mbul->mbu[mbul->zero] = mbu;
-        mbul->zero++;
-        return mbu;
-    } else {
-        MemoryBigUnitList *mbul1 = sbrk(0);
-        brk(mbul1 + sizeof(MemoryBigUnitList));
-        mbul1->bnext = NULL;
-        mbul1->mbu = sbrk(0);
-        brk(mbul1->mbu + ((sizeof(MemoryBigUnit) * mm->listsize) + sizeof(MemoryBigUnit) * 3));
-        mbul1->length = mm->listsize + 3;
-        mbul1->zero = 0;
-        mbul->bnext = mbul1;
-        mm->mbuw = mbul1;
-        return NewBigUnit(mm);
+    MemoryBigUnit *mbu = sbrk(0);
+    brk(mbu + MemoryBigUnitSize);
+    mbu->id = 0;
+    mbu->unit = mm->mbulistlength;
+    mbu->unitsizestandard = mm->smallunitsize;
+    mbu->msulistsize = 4;
+    mbu->msulistlength = 0;
+    mbu->msuliststandard = 2;
+    mbu->msulist = sbrk(0);
+    brk(mbu->msulist + (sizeof(MemorySmallUnit *) << 2));
+    if ((mm->mbulistlength + 1) > (1 << mm->mbuliststandard)) {
+        void *mbulisttmp = sbrk(0);
+        brk(mbulisttmp + (sizeof(MemoryBigUnit *) << (mm->mbuliststandard << 1)));
+        memcpy(mbulisttmp, mm->mbulist, (sizeof(MemoryBigUnit *) << mm->mbulistlength));
+        mm->mbulist = NULL;
+        brk(mm->mbulist);
+        mm->mbulist = mbulisttmp;
     }
+    mm->mbulist[mm->mbulistlength] = mbu;
+    mm->mbulistlength++;
+    return mbu;
 }
 
 MemorySmallUnit *NewSmallUnit(MemoryBigUnit *mbu, UnitSize us) {
-    void *msu = sbrk(0);
-    brk(msu + MemorySmallUnitSize + us);
-    MemorySmallUnit *mu = (MemorySmallUnit *) msu;
-    mu->m = msu + MemorySmallUnitSize;
-    mu->minfo = NULL;
-    mu->minfow = NULL;
-    mu->unit = mbu->unit++;
-    mu->length = 0;
-    mu->fsize = 0;
-    mu->size = us;
-    mu->next = NULL;
-    if (mbu->snext == NULL) {
-        mbu->snext = mu;
-        mbu->msuw = mu;
+    MemorySmallUnit *msu = sbrk(0);
+    if (us != 0) {
+        brk(msu + (MemorySmallUnitSize + us));
+        msu->size = us;
     } else {
-        mbu->msuw->next = mu;
-        mbu->msuw = mu;
+        brk(msu + (MemorySmallUnitSize + mbu->unitsizestandard));
+        msu->size = mbu->unitsizestandard;
     }
-    return mu;
+
+    msu->freelist = sbrk(0);
+    brk(msu->freelist + (sizeof(MemoryInfo *) << 12));
+
+    msu->freelistmake = sbrk(0);
+    brk(msu->freelistmake + (sizeof(size_t) << 12));
+
+    msu->m = (msu + MemorySmallUnitSize);
+
+    msu->unit = mbu->msulistlength;
+    msu->length = 0;
+    msu->freesize = 0;
+    msu->freelistmakesize = 0;
+    msu->freelistsize = 0;
+    msu->standard = 12;
+    if ((mbu->msulistlength + 1) > (1 << mbu->msuliststandard)) {
+        MemorySmallUnit **msulisttmp = sbrk(0);
+        brk(msulisttmp + (sizeof(MemorySmallUnit *) << (mbu->msuliststandard << 1)));
+        memcpy(msulisttmp, mbu->msulist, (sizeof(MemorySmallUnit *) << mbu->msuliststandard));
+        mbu->msulist = NULL;
+        brk(mbu->msulist);
+        mbu->msulist = msulisttmp;
+    }
+    msu->msuindex = mbu->msulistlength;
+    mbu->msulist[mbu->msulistlength] = msu;
+    mbu->msulistlength++;
+    return msu;
 }
 
 MemoryInfo *UnitMalloc(MemorySmallUnit *mu, MemorySize s) {
-    if (mu->minfo != NULL && mu->fsize >= s + MemoryInfoSize) {
-        MemoryInfo *m = mu->minfo;
-        while (true) {
-            if (m == NULL) {
-                break;
-            } else {
-                if (m->size < s) {
-                    m = m->next;
-                    continue;
+    MemoryInfo *m;
+    if (mu->infohead != NULL && mu->freesize >= s + MemoryInfoSize) {
+        for (int i = 0; i < mu->freelistsize; ++i) {
+            if (mu->freelist[i] == NULL) {
+                continue;
+            }
+            m = mu->freelist[i];
+            if (m->size == s) {
+                m->isfree = 0;
+                m->freelistindex = -1;
+                mu->freesize -= m->size + MemoryInfoSize;
+                mu->freelistmake[mu->freelistmakesize] = i;
+                mu->freelist[i] = NULL;
+                mu->freelistsize--;
+                mu->freelistmakesize++;
+                return m;
+            }
+            if (m->size > s + MemoryInfoSize) {
+                m->size -= s + MemoryInfoSize;
+                mu->freesize -= s + MemoryInfoSize;
+                MemoryInfo *mi = (MemoryInfo *) (m->m + m->size);
+                mi->m = (m->m + m->size + MemoryInfoSize);
+                mi->unit = mu->unit;
+                mi->size = s;
+                mi->isfree = 0;
+                mi->next = m->next;
+                mi->back = m;
+                mi->freelistindex = -1;
+                if (m->next != NULL) {
+                    m->next->back = mi;
                 }
-                if (m->isfree == 1) {
-                    if (m->size == s) {
-                        m->isfree = 0;
-                        mu->fsize -= m->size + MemoryInfoSize;
-                        return m;
-                    }
-                    if (m->size > s + MemoryInfoSize) {
-                        m->size -= s + MemoryInfoSize;
-                        mu->fsize -= s + MemoryInfoSize;
-                        MemoryInfo *mi = (MemoryInfo *) (m->m + m->size);
-                        mi->m = (m->m + m->size + MemoryInfoSize);
-                        mi->unit = mu->unit;
-                        mi->size = s;
-                        mi->isfree = 0;
-                        mi->next = m->next;
-                        mi->back = m;
-                        if (m->next != NULL) {
-                            m->next->back = mi;
-                        }
-                        if (mu->minfow == m) {
-                            mu->minfow = mi;
-                        }
-                        m->next = mi;
-                        return mi;
-                    }
+                if (mu->infotail == m) {
+                    mu->infotail = mi;
                 }
-                m = m->next;
+                m->next = mi;
+                return mi;
             }
         }
     }
+
     if (mu->size - mu->length >= s + MemoryInfoSize) {
         MemoryInfo *mi = (MemoryInfo *) (mu->m + mu->length);
         mu->length += MemoryInfoSize;
@@ -146,142 +129,165 @@ MemoryInfo *UnitMalloc(MemorySmallUnit *mu, MemorySize s) {
         mi->size = s;
         mi->isfree = 0;
         mi->next = NULL;
-        mi->back = mu->minfow;
-        if (mu->minfo == NULL) {
-            mu->minfo = mi;
-            mu->minfow = mi;
+        mi->back = mu->infotail;
+        mi->freelistindex = -1;
+        if (mu->infohead == NULL) {
+            mu->infohead = mi;
+            mu->infotail = mi;
         } else {
-            mu->minfow->next = mi;
-            mu->minfow = mi;
+            mu->infotail->next = mi;
+            mu->infotail = mi;
         }
         return mi;
     }
     return NULL;
 }
 
-void UnitFree(MemorySmallUnit *mu, MemoryInfo *m) {
+int UnitFree(MemorySmallUnit *mu, MemoryInfo *m) {
     if (m->isfree == 0) {
         m->isfree = 1;
-        mu->fsize += (m->size + MemoryInfoSize);
-        MemoryInfo *mi = m->back, *mw = NULL, *miw = NULL;
-        int next = 0;
-        if (mi != NULL) {
-            if (mi->isfree == 1) {
-                miw = (mi->m + mi->size);
-                if (miw == m) {
-                    mi->size += m->size + MemoryInfoSize;
-                    mi->next = m->next;
-                    if (m->next != NULL) {
-                        m->next->back = mi;
-                    }
-                    mu->minfow = mu->minfow == m ? mi : mu->minfow;
-                    mu->minfo = mu->minfo == m ? mi : mu->minfo;
-
-                    if (m->next != NULL) {
-                        if (m->next->isfree == 1) {
-                            mw = (m->m + m->size);
-                            if (mw == m->next) {
-                                mi->size += m->next->size + MemoryInfoSize;
-                                mi->next = m->next->next;
-                                if (m->next->next != NULL) {
-                                    m->next->next->back = mi;
-                                }
-                                mu->minfow = mu->minfow == m->next ? mi : mu->minfow;
-                                mu->minfo = mu->minfo == m->next ? mi : mu->minfo;
-                                next = 1;
-                            }
-                        }
-                    }
-
-                }
+        mu->freesize += (m->size + MemoryInfoSize);
+        MemoryInfo *mi = m->back;
+        if (mi != NULL && mi->isfree /*&& (mi->m + mi->size) == m*/) {
+            mi->size += m->size + MemoryInfoSize;
+            mi->next = m->next;
+            if (m->next != NULL) {
+                m->next->back = mi;
             }
+            mu->infotail = mu->infotail == m ? mi : mu->infotail;
+            mu->infohead = mu->infohead == m ? mi : mu->infohead;
+            mu->freelist[m->freelistindex] = NULL;
+            mu->freelistsize--;
+            if (m->next != NULL && m->next->isfree /*&& (m->m + m->size) == m->next*/) {
+                mi->size += m->next->size + MemoryInfoSize;
+                mi->next = m->next->next;
+                if (m->next->next != NULL) {
+                    m->next->next->back = mi;
+                }
+                mu->infotail = mu->infotail == m->next ? mi : mu->infotail;
+                mu->infohead = mu->infohead == m->next ? mi : mu->infohead;
+                mu->freelist[m->next->freelistindex] = NULL;
+                mu->freelistsize--;
+            }
+            if (mu->freelistmakesize != 0) {
+                mi->freelistindex = mu->freelistmake[mu->freelistmakesize];
+                mu->freelist[mu->freelistmake[mu->freelistmakesize]] = mi;
+                mu->freelistmakesize--;
+                mu->freelistsize++;
+            } else {
+                if ((mu->freelistsize + 1) > (mu->standard << 1)) {
+                    MemoryInfo **freelist = sbrk(0);
+                    brk(freelist + (sizeof(MemoryInfo *) << (mu->standard << 1)));
+                    memcpy(freelist, mu->freelist, (sizeof(MemoryInfo *) << mu->standard));
+                    size_t *freemake = sbrk(0);
+                    brk(freemake + (sizeof(size_t) << (mu->standard << 1)));
+                    memcpy(freemake, mu->freelistmake, (sizeof(size_t) << mu->standard));
+
+                    mu->freelist = NULL;
+                    mu->freelistmake = NULL;
+                    brk(mu->freelist);
+                    brk(mu->freelistmake);
+
+                    mu->freelist = freelist;
+                    mu->freelistmake = freemake;
+                }
+                mi->freelistindex = mu->freelistsize;
+                mu->freelist[mu->freelistsize] = mi;
+                mu->freelistsize++;
+            }
+            goto end;
         }
 
-        if (next == 0) {
-            mi = m->next;
-            if (mi != NULL) {
-                if (mi->isfree == 1) {
-                    mw = (m->m + m->size);
-                    if (mw == mi) {
-                        m->size += mi->size + MemoryInfoSize;
-                        m->next = mi->next;
-                        if (mi->next != NULL) {
-                            mi->next->back = m;
-                        }
-                        mu->minfow = mu->minfow == mi ? m : mu->minfow;
-                        mu->minfo = mu->minfo == mi ? m : mu->minfo;
-                    }
-                }
+        mi = m->next;
+        if (mi != NULL && mi->isfree /*&& (m->m + m->size) == mi*/) {
+            m->size += mi->size + MemoryInfoSize;
+            m->next = mi->next;
+            if (mi->next != NULL) {
+                mi->next->back = m;
             }
+            mu->infotail = mu->infotail == mi ? m : mu->infotail;
+            mu->infohead = mu->infohead == mi ? m : mu->infohead;
+            mu->freelist[mi->freelistindex] = NULL;
+            mu->freelistsize--;
         }
+        if (mu->freelistmakesize != 0) {
+            m->freelistindex = mu->freelistmake[mu->freelistmakesize];
+            mu->freelist[mu->freelistmake[mu->freelistmakesize]] = m;
+            mu->freelistmakesize--;
+            mu->freelistsize++;
+        } else {
+            if ((mu->freelistsize + 1) > (mu->standard << 1)) {
+                MemoryInfo **freelist = sbrk(0);
+                brk(freelist + (sizeof(MemoryInfo *) << (mu->standard << 1)));
+                memcpy(freelist, mu->freelist, (sizeof(MemoryInfo *) << mu->standard));
+                size_t *freemake = sbrk(0);
+                brk(freemake + (sizeof(size_t) << (mu->standard << 1)));
+                memcpy(freemake, mu->freelistmake, (sizeof(size_t) << mu->standard));
+
+                mu->freelist = NULL;
+                mu->freelistmake = NULL;
+                brk(mu->freelist);
+                brk(mu->freelistmake);
+
+                mu->freelist = freelist;
+                mu->freelistmake = freemake;
+            }
+            m->freelistindex = mu->freelistsize;
+            mu->freelist[mu->freelistsize] = m;
+            mu->freelistsize++;
+        }
+        end:
+        return 1;
     }
+    return 0;
 }
 
-MemoryInfo *SmallUnitAlloc(MTMemoryManager *mm, MemoryBigUnit *mbu, MemorySmallUnit *msu, MemorySize ms) {
-    MemorySmallUnit *mu = msu;
-    while (true) {
-        if (mu == NULL) {
-            break;
-        } else {
-            if (mu->size - mu->length >= ms + MemoryInfoSize
-                || mu->fsize >= ms + MemoryInfoSize) {
-                return UnitMalloc(mu, ms);
-            } else {
-                mu = mu->next;
+MemoryInfo *SmallUnitAlloc(MemoryBigUnit *mbu, MemorySize ms) {
+    MemorySmallUnit *mu;
+    MemoryInfo *mi;
+    for (int i = 0; i < mbu->msulistlength; ++i) {
+        mu = mbu->msulist[i];
+        if (mu->size - mu->length >= ms + MemoryInfoSize || mu->freesize >= ms + MemoryInfoSize) {
+            if ((mi = UnitMalloc(mu, ms)) != NULL) {
+                return mi;
             }
         }
     }
-    return UnitMalloc(NewSmallUnit(mbu, mm->msusize), ms);
+    return UnitMalloc(NewSmallUnit(mbu, 0), ms);
 }
 
 MemoryInfo *MTMemoryManagerAlloc(MTMemoryManager *mm, MemorySize ms) {
     pthread_t id = pthread_self();
-    MemoryBigUnitList *mbul = mm->mbu;
-    while (true) {
-        if (mbul == NULL) {
-            break;
-        } else {
-            for (size_t i = 0; i < mbul->zero; i++) {
-                if (mbul->mbu[i]->id == id) {
-                    MemoryInfo *m = SmallUnitAlloc(mm, mbul->mbu[i], mbul->mbu[i]->snext, ms);
-                    m->id = id;
-                    return m;
-                }
-            }
-            mbul = mbul->bnext;
+    for (int i = 0; i < mm->mbulistlength; ++i) {
+        if (mm->mbulist[i]->id == id) {
+            MemoryInfo *m = SmallUnitAlloc(mm->mbulist[i], ms);
+            m->id = id;
+            return m;
         }
     }
     MemoryBigUnit *mbu = NewBigUnit(mm);
-    NewSmallUnit(mbu, mm->msusize);
+    NewSmallUnit(mbu, 0);
     mbu->id = id;
-    MemoryInfo *mi = SmallUnitAlloc(mm, mbu, mbu->snext, ms);
+    MemoryInfo *mi = SmallUnitAlloc(mbu, ms);
     mi->id = id;
     return mi;
 }
 
 MemoryInfo *MTMemoryManagerCalloc(MTMemoryManager *mm, MemorySize ms) {
     pthread_t id = pthread_self();
-    MemoryBigUnitList *mbul = mm->mbu;
-    while (true) {
-        if (mbul == NULL) {
-            break;
-        } else {
-            for (size_t i = 0; i < mbul->zero; i++) {
-                if (mbul->mbu[i]->id == id) {
-                    MemoryInfo *m = SmallUnitAlloc(mm, mbul->mbu[i], mbul->mbu[i]->snext, ms);
-                    memset(m->m, 0, (size_t) m->size);
-                    m->id = id;
-                    return m;
-                }
-            }
-            mbul = mbul->bnext;
+    for (int i = 0; i < mm->mbulistlength; ++i) {
+        if (mm->mbulist[i]->id == id) {
+            MemoryInfo *m = SmallUnitAlloc(mm->mbulist[i], ms);
+            memset(m->m, 0, m->size);
+            m->id = id;
+            return m;
         }
     }
     MemoryBigUnit *mbu = NewBigUnit(mm);
-    NewSmallUnit(mbu, mm->msusize);
+    NewSmallUnit(mbu, 0);
     mbu->id = id;
-    MemoryInfo *mi = SmallUnitAlloc(mm, mbu, mbu->snext, ms);
-    memset(mi->m, 0, (size_t) mi->size);
+    MemoryInfo *mi = SmallUnitAlloc(mbu, ms);
+    memset(mi->m, 0, mi->size);
     mi->id = id;
     return mi;
 }
@@ -289,365 +295,218 @@ MemoryInfo *MTMemoryManagerCalloc(MTMemoryManager *mm, MemorySize ms) {
 MemoryInfo *MTMemoryManagerRealloc(MTMemoryManager *mm, MemoryInfo *mi, MemorySize ms) {
     if (mi->size != ms) {
         pthread_t id = pthread_self();
-        MemoryBigUnitList *mbul = mm->mbu;
-        while (true) {
-            if (mbul == NULL) {
-                break;
-            } else {
-                for (size_t i = 0; i < mbul->zero; i++) {
-                    if (mbul->mbu[i]->id == id) {
-                        MemoryInfo *m = SmallUnitAlloc(mm, mbul->mbu[i], mbul->mbu[i]->snext, ms);
-                        memcpy(m->m, mi->m, mi->size);
-                        m->id = id;
-                        MTMemoryManagerFree(mm, mi);
-                        return m;
-                    }
-                }
-                mbul = mbul->bnext;
+        for (int i = 0; i < mm->mbulistlength; ++i) {
+            if (mm->mbulist[i]->id == id) {
+                MemoryInfo *m = SmallUnitAlloc(mm->mbulist[i], ms);
+                memcpy(m->m, mi->m, mi->size);
+                m->id = id;
+                MTMemoryManagerFree(mm, mi);
+                return m;
             }
         }
         MemoryBigUnit *mbu = NewBigUnit(mm);
-        NewSmallUnit(mbu, mm->msusize);
+        NewSmallUnit(mbu, 0);
         mbu->id = id;
-        MemoryInfo *mi1 = SmallUnitAlloc(mm, mbu, mbu->snext, ms);
+        MemoryInfo *mi1 = SmallUnitAlloc(mbu, ms);
         memcpy(mi1->m, mi->m, mi->size);
         mi1->id = id;
         MTMemoryManagerFree(mm, mi);
         return mi1;
-    } else {
-        return mi;
     }
+    return NULL;
 }
 
-void MTMemoryManagerFree(MTMemoryManager *mm, MemoryInfo *mi) {
-    MemoryBigUnitList *mbul = mm->mbu;
-    while (true) {
-        if (mbul == NULL) {
-            break;
-        } else {
-            for (size_t i = 0; i < mbul->zero; i++) {
-                if (mbul->mbu[i]->id == mi->id) {
-                    MemorySmallUnit *msu = mbul->mbu[i]->snext;
-                    while (true) {
-                        if (msu == NULL) {
-                            break;
-                        } else {
-                            if (msu->unit == mi->unit) {
-                                return UnitFree(msu, mi);
-                            }
-                        }
-                        msu = msu->next;
-                    }
+int MTMemoryManagerFree(MTMemoryManager *mm, MemoryInfo *mi) {
+    MemoryBigUnit *mbutmp;
+    MemorySmallUnit *msutmp;
+    for (int i = 0; i < mm->mbulistlength; ++i) {
+        mbutmp = mm->mbulist[i];
+        if (mbutmp->id == mi->id) {
+            for (int j = 0; j < mbutmp->msulistlength; ++j) {
+                msutmp = mbutmp->msulist[j];
+                if (msutmp->unit == mi->unit) {
+                    return UnitFree(msutmp, mi);
                 }
             }
-            mbul = mbul->bnext;
         }
     }
+    return 0;
 }
 
-MemoryInfo *MTMemoryManagerUnitAlloc(MTMemoryManager *mm, MemoryBigUnit *mbu, MemorySize ms) {
-    MemoryInfo *m = SmallUnitAlloc(mm, mbu, mbu->snext, ms);
+MemoryInfo *MTMemoryManagerUnitAlloc(MemoryBigUnit *mbu, MemorySize ms) {
+    MemoryInfo *m = SmallUnitAlloc(mbu, ms);
     m->id = mbu->id;
     return m;
 }
 
-MemoryInfo *MTMemoryManagerUnitCalloc(MTMemoryManager *mm, MemoryBigUnit *mbu, MemorySize ms) {
-    MemoryInfo *m = SmallUnitAlloc(mm, mbu, mbu->snext, ms);
+MemoryInfo *MTMemoryManagerUnitCalloc(MemoryBigUnit *mbu, MemorySize ms) {
+    MemoryInfo *m = SmallUnitAlloc(mbu, ms);
     m->id = mbu->id;
-    memset(m->m, 0, (size_t) m->size);
+    memset(m->m, 0, m->size);
     return m;
 }
 
-void MTMemoryManagerUnitFree(MemoryBigUnit *mbu, MemoryInfo *mi) {
-    MemorySmallUnit *msu = mbu->snext;
-    while (true) {
-        if (msu == NULL) {
-            break;
-        } else {
-            if (msu->unit == mi->unit) {
-                UnitFree(msu, mi);
-                break;
+int MTMemoryManagerUnitFree(MemoryBigUnit *mbu, MemoryInfo *mi) {
+    for (int i = 0; i < mbu->msulistlength; ++i) {
+        if (mbu->msulist[i]->unit == mi->unit) {
+            return UnitFree(mbu->msulist[i], mi);
+        }
+    }
+    return 0;
+}
+
+MemoryInfo *MTMemoryManagerUnitRealloc(MemoryBigUnit *mbu, MemoryInfo *mi, MemorySize ms) {
+    if (mi->size < ms) {
+        MemoryInfo *m = SmallUnitAlloc(mbu, ms);
+        m->id = mbu->id;
+        memcpy(m->m, mi->m, mi->size);
+        for (int i = 0; i < mbu->msulistlength; ++i) {
+            if (mbu->msulist[i]->unit == mi->unit) {
+                UnitFree(mbu->msulist[i], mi);
             }
-            msu = msu->next;
         }
-    }
-}
-
-MemoryInfo *MTMemoryManagerUnitRealloc(MTMemoryManager *mm, MemoryBigUnit *mu, MemoryInfo *mi, MemorySize ms) {
-    if (mi->size != ms) {
-        int asd = mi->size;
-        void *aa = mi->m;
-        MTMemoryManagerUnitFree(mu, mi);
-        MemoryInfo *h = MTMemoryManagerUnitAlloc(mm, mu, ms);
-        memcpy(h->m, aa, asd);
-        return h;
+        return m;
     } else {
-        return mi;
+        return NULL;
     }
 }
 
 MemoryBigUnit *MTMemoryManagerCreateUnitAndBindingThread(MTMemoryManager *mm, pthread_t id) {
     MemoryBigUnit *mbu = NewBigUnit(mm);
-    NewSmallUnit(mbu, mm->msusize);
+    NewSmallUnit(mbu, 0);
     mbu->id = id;
     return mbu;
 }
 
 MemoryBigUnit *MTMemoryManagerBindingThread(MTMemoryManager *mm, pthread_t id) {
-    MemoryBigUnitList *mbul = mm->mbu;
-    while (true) {
-        if (mbul == NULL) {
-            break;
-        } else {
-            for (size_t i = 0; i < mbul->zero; i++) {
-                if (mbul->mbu[i]->id == 0) {
-                    mbul->mbu[i]->id = id;
-                    if (mbul->mbu[i]->snext == NULL) {
-                        NewSmallUnit(mbul->mbu[i], mm->msusize);
-                    }
-                    return mbul->mbu[i];
-                }
+    MemoryBigUnit *mbu;
+    for (int i = 0; i < mm->mbulistlength; ++i) {
+        mbu = mm->mbulist[i];
+        if (mbu->id == 0) {
+            mbu->id = id;
+            if (mbu->msulistlength == 0) {
+                NewSmallUnit(mbu, 0);
             }
-            mbul = mbul->bnext;
+            return mbu;
         }
     }
     return MTMemoryManagerCreateUnitAndBindingThread(mm, id);
 }
 
-void MTMemoryManagerManualBindingThread(MTMemoryManager *mm, MemoryBigUnit *mbu, pthread_t id) {
-    mbu->id = id;
-    if (mbu->snext == NULL) {
-        NewSmallUnit(mbu, mm->msusize);
+void MTMemoryManagerForceBindingThread(MemoryBigUnit *mbu, pthread_t id) {
+    if (mbu->msulistlength == 0) {
+        NewSmallUnit(mbu, 0);
     }
+    mbu->id = id;
 }
 
 void MTMemoryManagerDestroy(MTMemoryManager *mm) {
-    MemoryBigUnitList *mbul = mm->mbu;
-    while (true) {
-        if (mbul == NULL) {
-            break;
-        } else {
-            for (size_t i = 0; i < mbul->zero; i++) {
-                MemorySmallUnit *msu = mbul->mbu[i]->snext;
-                while (true) {
-                    if (msu == NULL) {
-                        break;
-                    } else {
-                        msu = msu->next;
-                        brk(msu);
-                    }
-                }
-                brk(mbul->mbu[i]);
-            }
-            mbul = mbul->bnext;
-            brk(mbul);
+    MemoryBigUnit *mbutmp;
+    for (int i = 0; i < mm->mbulistlength; ++i) {
+        mbutmp = mm->mbulist[i];
+        for (int j = 0; j < mbutmp->msulistlength; ++j) {
+            brk(mbutmp->msulist[j]);
         }
+        brk(mbutmp);
     }
+    brk(mm->mbulist);
     brk(mm);
 }
 
 
 void MTMemoryManagerManualCleanUnit(MemoryBigUnit *mbu) {
-    MemorySmallUnit *msu = mbu->snext;
-    while (true) {
-        if (msu == NULL) {
-            break;
-        } else {
-            msu = msu->next;
-            brk(msu);
-        }
+    for (int i = 0; i < mbu->msulistlength; ++i) {
+        brk(mbu->msulist[i]);
     }
+    mbu->msulistlength = 0;
 }
 
 void MTMemoryManagerManualCleanThread(MemoryBigUnit *mbu) {
     mbu->id = 0;
 }
 
-void MTMemoryManagerCleanUnit(MTMemoryManager *mm, pthread_t id) {
-    MemoryBigUnitList *mbul = mm->mbu;
-    while (true) {
-        if (mbul == NULL) {
-            break;
-        } else {
-            for (size_t i = 0; i < mbul->zero; i++) {
-                if (mbul->mbu[i]->id == id) {
-                    MemorySmallUnit *msu = mbul->mbu[i]->snext;
-                    while (true) {
-                        if (msu == NULL) {
-                            break;
-                        } else {
-                            msu = msu->next;
-                            brk(msu);
-                        }
-                    }
-                }
+int MTMemoryManagerCleanUnit(MTMemoryManager *mm, pthread_t id) {
+    MemoryBigUnit *mbutmp;
+    for (int i = 0; i < mm->mbulistlength; ++i) {
+        mbutmp = mm->mbulist[i];
+        if (mbutmp->id == id) {
+            for (int j = 0; j < mbutmp->msulistlength; ++j) {
+                brk(mbutmp->msulist[j]);
             }
-            mbul = mbul->bnext;
+            mbutmp->msulistlength = 0;
+            return 1;
         }
     }
+    return 0;
 }
 
-void MTMemoryManagerCleanThread(MTMemoryManager *mm, pthread_t id) {
-    MemoryBigUnitList *mbul = mm->mbu;
-    while (true) {
-        if (mbul == NULL) {
-            break;
-        } else {
-            for (size_t i = 0; i < mbul->zero; i++) {
-                if (mbul->mbu[i]->id == id) {
-                    mbul->mbu[i]->id = 0;
-                }
-            }
-            mbul = mbul->bnext;
-        }
+void MTMemoryManagerAppointInitUnit(MemoryBigUnit *mbu) {
+    for (int i = 0; i < mbu->msulistlength; ++i) {
+        mbu->msulist[i]->freelist = NULL;
+        brk(mbu->msulist[i]->freelist);
+        mbu->msulist[i]->freelistmake = NULL;
+        brk(mbu->msulist[i]->freelistmake);
+        mbu->msulist[i] = NULL;
+        brk(mbu->msulist[i]);
     }
-}
-
-void MTMemoryManagerAppointComleteInitUnit(MemoryBigUnit *mbu) {
-    MemoryInfo *info = mbu->snext->minfo;
-    while (true) {
-        if (info == NULL) {
-            break;
-        } else {
-            UnitFree(mbu->snext, info);
-            info->id = 0;
-            info = info->next;
-        }
-    }
-    MemorySmallUnit *msu = mbu->snext->next;
-    while (true) {
-        if (msu == NULL) {
-            break;
-        } else {
-            msu = msu->next;
-            brk(msu);
-        }
-    }
-    mbu->snext->next = NULL;
+    mbu->msulistlength = 0;
     mbu->id = 0;
 }
 
-void MTMemoryManagerCompleteInitUnit(MTMemoryManager *mm, pthread_t id) {
-    MemoryBigUnitList *mbul = mm->mbu;
-    while (true) {
-        if (mbul == NULL) {
-            break;
-        } else {
-            for (size_t i = 0; i < mbul->zero; i++) {
-                if (mbul->mbu[i]->id == id) {
-                    MemoryInfo *info = mbul->mbu[i]->snext->minfo;
-                    while (true) {
-                        if (info == NULL) {
-                            break;
-                        } else {
-                            UnitFree(mbul->mbu[i]->snext, info);
-                            info->id = 0;
-                            info = info->next;
-                        }
-                    }
-                    MemorySmallUnit *msu = mbul->mbu[i]->snext->next;
-                    while (true) {
-                        if (msu == NULL) {
-                            break;
-                        } else {
-                            msu = msu->next;
-                            brk(msu);
-                        }
-                    }
-                    mbul->mbu[i]->snext->next = NULL;
-                    mbul->mbu[i]->id = 0;
-                    return;
-                }
+int MTMemoryManagerInitUnit(MTMemoryManager *mm, pthread_t id) {
+    MemoryBigUnit *mbutmp;
+    for (int i = 0; i < mm->mbulistlength; ++i) {
+        mbutmp = mm->mbulist[i];
+        if (mbutmp->id == id) {
+            for (int i = 0; i < mbutmp->msulistlength; ++i) {
+                brk(mbutmp->msulist[i]);
             }
-            mbul = mbul->bnext;
+            mbutmp->msulistlength = 0;
+            mbutmp->id = 0;
+            return 1;
         }
     }
-}
-
-void MTMemoryManagerInitUnit(MTMemoryManager *mm, pthread_t id) {
-    MemoryBigUnitList *mbul = mm->mbu;
-    while (true) {
-        if (mbul == NULL) {
-            break;
-        } else {
-            for (size_t i = 0; i < mbul->zero; i++) {
-                if (mbul->mbu[i]->id == id) {
-                    MemoryInfo *info = mbul->mbu[i]->snext->minfo;
-                    while (true) {
-                        if (info == NULL) {
-                            break;
-                        } else {
-                            UnitFree(mbul->mbu[i]->snext, info);
-                            info->id = 0;
-                            info = info->next;
-                        }
-                    }
-                    MemorySmallUnit *msu = mbul->mbu[i]->snext->next;
-                    while (true) {
-                        if (msu == NULL) {
-                            break;
-                        } else {
-                            msu = msu->next;
-                            brk(msu);
-                        }
-                    }
-                    mbul->mbu[i]->snext->next = NULL;
-                    mbul->mbu[i]->id = 0;
-                    return;
-                }
-            }
-            mbul = mbul->bnext;
-        }
-    }
+    return 0;
 }
 
 bool MTMemoryManagerCMP(MemoryInfo *mi, MemoryInfo *mk, MemorySize s) {
-    if (memcmp(mi->m, mk->m, s) == 0) {
-        return true;
-    } else {
-        return false;
-    }
+    return memcmp(mi->m, mk->m, s);
 }
 
 void MemoryUnitCheck(MTMemoryManager *mm) {
-    MemoryBigUnitList *mbul = mm->mbu;
-    while (true) {
-        if (mbul == NULL) {
-            break;
-        } else {
-            for (size_t i = 0; i < mbul->zero; i++) {
-                printf("\n\n***************************\n");
-                printf("bunit:%p id:%lu unitlength:%ld snext:%p msuw:%p \n", mbul->mbu[i], mbul->mbu[i]->id,
-                       mbul->mbu[i]->unit,
-                       mbul->mbu[i]->snext, mbul->mbu[i]->msuw);
-                MemorySmallUnit *msu = mbul->mbu[i]->snext;
-                while (true) {
-                    if (msu == NULL) {
-                        break;
-                    } else {
-                        printf("////////////////////////\n");
-                        printf("sunit:%p m:%p next:%p size:%ld unit:%ld minfo:%p minfow:%p fsize:%ld length:%ld \n",
-                               msu,
-                               msu->m, msu->next, msu->size, msu->unit, msu->minfo, msu->minfow, msu->fsize,
-                               msu->length);
-                        printf("////////////////////////\n");
-                        MemoryInfo *mi = msu->minfo;
-                        while (true) {
-                            if (mi == NULL) {
-                                break;
-                            } else {
-                                printf("info:%p mi:%s m:%p back:%p next:%p size:%ld id:%lu unit:%ld isfree:%d \n", mi,
-                                       ((char *) mi->m), mi->m,
-                                       mi->back, mi->next, mi->size, mi->id, mi->unit, mi->isfree);
-                                mi = mi->next;
-                            }
-                        }
-                        printf("\n\n");
-                        msu = msu->next;
-                    }
+    MemoryBigUnit *mbutmp;
+    MemorySmallUnit *msutmp;
+    MemoryInfo *infotmp;
+    for (int i = 0; i < mm->mbulistlength; ++i) {
+        mbutmp = mm->mbulist[i];
+        printf("\n***************************\n");
+        printf("bunit:%p id:%lu unit:%zu\n", mbutmp, mbutmp->id, mbutmp->unit);
+        for (int j = 0; j < mbutmp->msulistlength; ++j) {
+            msutmp = mbutmp->msulist[j];
+            printf("////////////////////////\n");
+            printf("sunitfreelistsize:%ld\n", msutmp->freelistsize);
+            for (int j = 0; j < msutmp->freelistsize; ++j) {
+                if (msutmp->freelist[j] == NULL) {
+                    printf("sunitfreelist:NULL\n");
+                    continue;
+                }
+                printf("sunitfreelist:%p size:%zu index:%zu\n", msutmp->freelist[j], msutmp->freelist[j]->size, msutmp->freelist[j]->freelistindex);
+            }
+            printf("////////////////////////\n");
+            printf("sunit:%p m:%p size:%zu unit:%zu infohead:%p infotail:%p freesize:%zu length:%zu \n",
+                   msutmp, msutmp->m, msutmp->size, msutmp->unit, msutmp->infohead, msutmp->infotail, msutmp->freesize, msutmp->length);
+            printf("////////////////////////\n");
+            infotmp = msutmp->infohead;
+            for (;;) {
+                if (infotmp == NULL) {
+                    break;
+                } else {
+                    printf("info:%p mi:%s m:%p back:%p next:%p size:%zu id:%lu unit:%zu isfree:%zu \n",
+                           infotmp, ((char *) infotmp->m), infotmp->m, infotmp->back, infotmp->next, infotmp->size, infotmp->id, infotmp->unit, infotmp->isfree);
+                    infotmp = infotmp->next;
                 }
             }
-            mbul = mbul->bnext;
+            printf("\n");
         }
     }
 }

@@ -5,11 +5,10 @@
 #include <stdio.h>
 #include <stdbool.h>
 #include <unistd.h>
-#include "Init.h"
 
-#define ThreadUnit DataSizeType
-#define MemorySize DataSizeType
-#define UnitSize DataSizeType
+#define ThreadUnit size_t
+#define MemorySize size_t
+#define UnitSize size_t
 
 typedef struct mi {
     struct mi *back, *next;
@@ -33,7 +32,7 @@ typedef struct mbu {
 } MemoryBigUnit;
 
 typedef struct mm {
-    size_t mbulistsize, mbuliststandard, smallunitsize, mbulistlength;
+    size_t mbuliststandard, smallunitsize, mbulistlength;
     MemoryBigUnit **mbulist;
 } MTMemoryManager;
 

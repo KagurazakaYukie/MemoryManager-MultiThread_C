@@ -12,7 +12,6 @@ MTMemoryManager *MTMemoryManagerInit(UnitSize us) {
     brk(mm->mbulist + (sizeof(MemoryBigUnit *) << 2));
     mm->mbuliststandard = 2;
     mm->smallunitsize = us;
-    mm->mbulistsize = 4;
     mm->mbulistlength = 0;
     return mm;
 }
@@ -31,9 +30,10 @@ MemoryBigUnit *NewBigUnit(MTMemoryManager *mm) {
     if ((mm->mbulistlength + 1) > (1 << mm->mbuliststandard)) {
         void *mbulisttmp = sbrk(0);
         brk(mbulisttmp + (sizeof(MemoryBigUnit *) << (mm->mbuliststandard << 1)));
-        memcpy(mbulisttmp, mm->mbulist, (sizeof(MemoryBigUnit *) << mm->mbulistlength));
+        memcpy(mbulisttmp, mm->mbulist, (sizeof(MemoryBigUnit *) << mm->mbuliststandard));
         mm->mbulist = NULL;
         brk(mm->mbulist);
+        mm->mbuliststandard <<= 1;
         mm->mbulist = mbulisttmp;
     }
     mm->mbulist[mm->mbulistlength] = mbu;
@@ -71,6 +71,7 @@ MemorySmallUnit *NewSmallUnit(MemoryBigUnit *mbu, UnitSize us) {
         memcpy(msulisttmp, mbu->msulist, (sizeof(MemorySmallUnit *) << mbu->msuliststandard));
         mbu->msulist = NULL;
         brk(mbu->msulist);
+        mbu->msuliststandard <<= 1;
         mbu->msulist = msulisttmp;
     }
     msu->msuindex = mbu->msulistlength;
@@ -89,11 +90,11 @@ MemoryInfo *UnitMalloc(MemorySmallUnit *mu, MemorySize s) {
             m = mu->freelist[i];
             if (m->size == s) {
                 m->isfree = 0;
-                m->freelistindex = -1;
+                //m->freelistindex = -1;
                 mu->freesize -= m->size + MemoryInfoSize;
                 mu->freelistmake[mu->freelistmakesize] = i;
                 mu->freelist[i] = NULL;
-                mu->freelistsize--;
+                mu->freelistsize = i > mu->freelistsize ? i : mu->freelistsize-1;
                 mu->freelistmakesize++;
                 return m;
             }
@@ -107,7 +108,7 @@ MemoryInfo *UnitMalloc(MemorySmallUnit *mu, MemorySize s) {
                 mi->isfree = 0;
                 mi->next = m->next;
                 mi->back = m;
-                mi->freelistindex = -1;
+                //mi->freelistindex = -1;
                 if (m->next != NULL) {
                     m->next->back = mi;
                 }
@@ -130,7 +131,7 @@ MemoryInfo *UnitMalloc(MemorySmallUnit *mu, MemorySize s) {
         mi->isfree = 0;
         mi->next = NULL;
         mi->back = mu->infotail;
-        mi->freelistindex = -1;
+        //mi->freelistindex = -1;
         if (mu->infohead == NULL) {
             mu->infohead = mi;
             mu->infotail = mi;
@@ -156,8 +157,10 @@ int UnitFree(MemorySmallUnit *mu, MemoryInfo *m) {
             }
             mu->infotail = mu->infotail == m ? mi : mu->infotail;
             mu->infohead = mu->infohead == m ? mi : mu->infohead;
-            mu->freelist[m->freelistindex] = NULL;
-            mu->freelistsize--;
+            /*mu->freelist[mi->freelistindex] = NULL;
+            mu->freelistmake[mu->freelistmakesize] = mi->freelistindex;
+            mu->freelistsize = mi->freelistindex > mu->freelistsize ? mi->freelistindex : mu->freelistsize;
+            mu->freelistmakesize++;*/
             if (m->next != NULL && m->next->isfree /*&& (m->m + m->size) == m->next*/) {
                 mi->size += m->next->size + MemoryInfoSize;
                 mi->next = m->next->next;
@@ -167,11 +170,13 @@ int UnitFree(MemorySmallUnit *mu, MemoryInfo *m) {
                 mu->infotail = mu->infotail == m->next ? mi : mu->infotail;
                 mu->infohead = mu->infohead == m->next ? mi : mu->infohead;
                 mu->freelist[m->next->freelistindex] = NULL;
-                mu->freelistsize--;
+                mu->freelistmake[mu->freelistmakesize] = m->next->freelistindex;
+                mu->freelistsize = m->next->freelistindex > mu->freelistsize ? m->next->freelistindex : mu->freelistsize-1;
+                mu->freelistmakesize++;
             }
-            if (mu->freelistmakesize != 0) {
-                mi->freelistindex = mu->freelistmake[mu->freelistmakesize];
-                mu->freelist[mu->freelistmake[mu->freelistmakesize]] = mi;
+            /*if (mu->freelistmakesize != 0) {
+                mi->freelistindex = mu->freelistmake[mu->freelistmakesize - 1];
+                mu->freelist[mu->freelistmake[mu->freelistmakesize - 1]] = mi;
                 mu->freelistmakesize--;
                 mu->freelistsize++;
             } else {
@@ -194,7 +199,7 @@ int UnitFree(MemorySmallUnit *mu, MemoryInfo *m) {
                 mi->freelistindex = mu->freelistsize;
                 mu->freelist[mu->freelistsize] = mi;
                 mu->freelistsize++;
-            }
+            }*/
             goto end;
         }
 
@@ -208,11 +213,13 @@ int UnitFree(MemorySmallUnit *mu, MemoryInfo *m) {
             mu->infotail = mu->infotail == mi ? m : mu->infotail;
             mu->infohead = mu->infohead == mi ? m : mu->infohead;
             mu->freelist[mi->freelistindex] = NULL;
-            mu->freelistsize--;
+            mu->freelistmake[mu->freelistmakesize] = mi->freelistindex;
+            mu->freelistsize = mi->freelistindex > mu->freelistsize ? mi->freelistindex : mu->freelistsize-1;
+            mu->freelistmakesize++;
         }
         if (mu->freelistmakesize != 0) {
-            m->freelistindex = mu->freelistmake[mu->freelistmakesize];
-            mu->freelist[mu->freelistmake[mu->freelistmakesize]] = m;
+            m->freelistindex = mu->freelistmake[mu->freelistmakesize - 1];
+            mu->freelist[mu->freelistmake[mu->freelistmakesize - 1]] = m;
             mu->freelistmakesize--;
             mu->freelistsize++;
         } else {
@@ -490,11 +497,13 @@ void MemoryUnitCheck(MTMemoryManager *mm) {
                     printf("sunitfreelist:NULL\n");
                     continue;
                 }
-                printf("sunitfreelist:%p size:%zu index:%zu\n", msutmp->freelist[j], msutmp->freelist[j]->size, msutmp->freelist[j]->freelistindex);
+                printf("sunitfreelist:%p size:%zu index:%zu\n", msutmp->freelist[j], msutmp->freelist[j]->size,
+                       msutmp->freelist[j]->freelistindex);
             }
             printf("////////////////////////\n");
             printf("sunit:%p m:%p size:%zu unit:%zu infohead:%p infotail:%p freesize:%zu length:%zu \n",
-                   msutmp, msutmp->m, msutmp->size, msutmp->unit, msutmp->infohead, msutmp->infotail, msutmp->freesize, msutmp->length);
+                   msutmp, msutmp->m, msutmp->size, msutmp->unit, msutmp->infohead, msutmp->infotail, msutmp->freesize,
+                   msutmp->length);
             printf("////////////////////////\n");
             infotmp = msutmp->infohead;
             for (;;) {
@@ -502,7 +511,8 @@ void MemoryUnitCheck(MTMemoryManager *mm) {
                     break;
                 } else {
                     printf("info:%p mi:%s m:%p back:%p next:%p size:%zu id:%lu unit:%zu isfree:%zu \n",
-                           infotmp, ((char *) infotmp->m), infotmp->m, infotmp->back, infotmp->next, infotmp->size, infotmp->id, infotmp->unit, infotmp->isfree);
+                           infotmp, ((char *) infotmp->m), infotmp->m, infotmp->back, infotmp->next, infotmp->size,
+                           infotmp->id, infotmp->unit, infotmp->isfree);
                     infotmp = infotmp->next;
                 }
             }
